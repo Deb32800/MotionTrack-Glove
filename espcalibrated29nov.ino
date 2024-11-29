@@ -5,8 +5,8 @@
 #include "MPU6050_6Axis_MotionApps20.h"
 
 // WiFi credentials
-const char* ssid = "Dev";
-const char* password = "00000000";
+const char* ssid = "Dev";       // Replace with your WiFi SSID
+const char* password = "00000000";   // Replace with your WiFi password
 
 // WebSocket server
 WebSocketsServer webSocket = WebSocketsServer(81);
@@ -28,8 +28,7 @@ const float NOMINAL_RES = 26000;
 const float BENT_RES = 60000.0;
 
 // Calibration values for MPU6050
-int accel_Xcal = 1, accel_Ycal = 1, accel_Zcal = 1;
-int gyro_Xcal = 0, gyro_Ycal = 0, gyro_Zcal = 0;
+float yaw_offset = 0, pitch_offset = 0, roll_offset = 0;
 
 int16_t ax, ay, az, gx, gy, gz; // Accelerometer and Gyroscope data
 
@@ -43,8 +42,7 @@ uint8_t fifoBuffer[64];
 Quaternion q;
 VectorInt16 aa, aaReal, aaWorld;
 VectorFloat gravity;
-float euler[3];
-float ypr[3];
+float ypr[3]; // yaw, pitch, roll
 
 // Connect to WiFi
 void connectToWiFi() {
@@ -85,13 +83,13 @@ void setupMPU() {
     Serial.println("MPU6050 connection successful!");
   } else {
     Serial.println("MPU6050 connection failed.");
+    while (1);
   }
 
   devStatus = mpu.dmpInitialize();
   mpu.setXGyroOffset(221);
   mpu.setYGyroOffset(76);
   mpu.setZGyroOffset(-85);
-  mpu.setZAccelOffset(1788);
 
   if (devStatus == 0) {
     mpu.CalibrateAccel(10);
@@ -101,36 +99,51 @@ void setupMPU() {
     Serial.println("DMP Ready!");
     packetSize = mpu.dmpGetFIFOPacketSize();
     dmpReady = true;
+
+    // Initial calibration
+    calibrateMPU();
   } else {
     Serial.print("DMP Initialization failed with code ");
     Serial.println(devStatus);
   }
 }
 
+// Calibrate MPU offsets
+void calibrateMPU() {
+  Serial.println("Calibrating MPU6050...");
+  float temp_yaw = 0, temp_pitch = 0, temp_roll = 0;
+  for (int i = 0; i < 100; i++) {
+    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {
+      mpu.dmpGetQuaternion(&q, fifoBuffer);
+      mpu.dmpGetGravity(&gravity, &q);
+      mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
+      temp_yaw += ypr[0];
+      temp_pitch += ypr[1];
+      temp_roll += ypr[2];
+    }
+    delay(10);
+  }
+  yaw_offset = temp_yaw / 100.0;
+  pitch_offset = temp_pitch / 100.0;
+  roll_offset = temp_roll / 100.0;
+  Serial.println("Calibration complete.");
+}
+
 // Read accelerometer and gyroscope data
 void accel_and_gyro(const char* hand) {
   if (dmpReady && mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) {
-    // Get quaternion data
     mpu.dmpGetQuaternion(&q, fifoBuffer);
-    // Calculate gravity vector
     mpu.dmpGetGravity(&gravity, &q);
-    // Get yaw, pitch, and roll
     mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
 
-    // Convert from radians to degrees
-    float yaw = ypr[0] * 180.0 / M_PI;
-    float pitch = ypr[1] * 180.0 / M_PI;
-    float roll = ypr[2] * 180.0 / M_PI;
+    // Convert from radians to degrees and apply calibration offsets
+    float yaw = (ypr[0] - yaw_offset) * 180.0 / M_PI;
+    float pitch = (ypr[1] - pitch_offset) * 180.0 / M_PI;
+    float roll = (ypr[2] - roll_offset) * 180.0 / M_PI;
 
-    // Print Yaw, Pitch, and Roll data to Serial Monitor
     Serial.print("Hand: ");
     Serial.println(hand);
-    Serial.print("Yaw: ");
-    Serial.println(yaw);
-    Serial.print("Pitch: ");
-    Serial.println(pitch);
-    Serial.print("Roll: ");
-    Serial.println(roll);
+    Serial.printf("Yaw: %.2f, Pitch: %.2f, Roll: %.2f\n", yaw, pitch, roll);
 
     // Broadcast data over WebSocket
     webSocket.broadcastTXT(String(hand) + ":RotateX:" + String(yaw));
@@ -150,8 +163,6 @@ void setup() {
   pinMode(PINKY_PIN, INPUT);
 
   connectToWiFi();
-  
-  // Initialize MPU6050 and DMP
   setupMPU();
 
   webSocket.begin();
